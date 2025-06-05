@@ -93,7 +93,6 @@ class Renderer extends h3d.scene.Renderer {
 		velocity : (null:h3d.mat.Texture),
 	};
 
-	public var cullingDistanceFactor : Float = 0.0;
 	public var skyMode : SkyMode = Hide;
 	public var toneMode : TonemapMap = Reinhard;
 	public var displayMode : DisplayMode = Pbr;
@@ -120,15 +119,6 @@ class Renderer extends h3d.scene.Renderer {
 		Vec4([Value("output.velocity", 2), Const(0), Const(0)])
 	]);
 	var decalsOutput = new h3d.pass.Output("decals",[
-		Vec4([Swiz(Value("output.color"),[X,Y,Z]), Value("output.albedoStrength",1)]),
-		Vec4([Value("output.normal",3), Value("output.normalStrength",1)]),
-		#if !MRT_low
-		Vec4([Value("output.metalness"), Value("output.roughness"), Value("output.occlusion"), Value("output.pbrStrength")])
-		#else
-		Vec4([Value("output.metalness"), Value("output.roughness"), Value("output.emissive"), Value("output.pbrStrength")])
-		#end
-	]);
-	var emissiveDecalsOutput = new h3d.pass.Output("emissiveDecal",[
 		Vec4([Swiz(Value("output.color"),[X,Y,Z]), Value("output.albedoStrength",1)]),
 		Vec4([Value("output.normal",3), Value("output.normalStrength",1)]),
 		#if !MRT_low
@@ -164,12 +154,8 @@ class Renderer extends h3d.scene.Renderer {
 		allPasses.push(decalsOutput);
 		allPasses.push(colorDepthOutput);
 		allPasses.push(colorDepthVelocityOutput);
-		allPasses.push(emissiveDecalsOutput);
 		allPasses.push(new h3d.pass.Shadows(null));
 		refreshProps();
-		#if editor
-		cullingDistanceFactor = hide.Ide.inst.ideConfig.cullingDistanceFactor;
-		#end
 	}
 
 	override function addShader(s:hxsl.Shader) {
@@ -185,7 +171,7 @@ class Renderer extends h3d.scene.Renderer {
 			return defaultPass;
 		case "default", "alpha", "additive":
 			return output;
-		case "decal" #if MRT_low , "emissiveDecal" #end:
+		case "decal":
 			return decalsOutput;
 		#if editor
 		case "highlight", "highlightBack":
@@ -229,41 +215,15 @@ class Renderer extends h3d.scene.Renderer {
 		});
 	}
 
-	inline function cullPassesWithDistance( passes : h3d.pass.PassList, f : h3d.col.Collider -> Bool ) {
-		var prevCollider = null;
-		var prevResult = true;
-		passes.filter(function(p) {
-			var col = p.obj.cullingCollider;
-			if( col == null )
-				return true;
-			if( col != prevCollider ) {
-				prevCollider = col;
-				prevResult = f(col);
-				if ( prevResult ) {
-					var dim = col.dimension() * cullingDistanceFactor;
-					dim = dim * dim;
-					prevResult = dim > ctx.camera.pos.distanceSq(p.obj.getAbsPos().getPosition());
-				}
-			}
-			return prevResult;
-		});
-	}
-
 	override function draw( name : String ) {
 		var passes = get(name);
-		if ( cullingDistanceFactor > 0.0 )
-			cullPassesWithDistance(passes, function(col) return col.inFrustum(ctx.camera.frustum));
-		else
-			cullPasses(passes, function(col) return col.inFrustum(ctx.camera.frustum));
+		cullPasses(passes, function(col) return col.inFrustum(ctx.camera.frustum));
 		defaultPass.draw(passes);
 		passes.reset();
 	}
 
 	function renderPass(p:h3d.pass.Output, passes, ?sort) {
-		if ( cullingDistanceFactor > 0.0 )
-			cullPassesWithDistance(passes, function(col) return col.inFrustum(ctx.camera.frustum));
-		else
-			cullPasses(passes, function(col) return col.inFrustum(ctx.camera.frustum));
+		cullPasses(passes, function(col) return col.inFrustum(ctx.camera.frustum));
 		p.draw(passes, sort);
 		passes.reset();
 	}
@@ -487,7 +447,7 @@ class Renderer extends h3d.scene.Renderer {
 		textures.normal = allocTarget("normal", true, 1., #if MRT_low RGB10A2 #else RGBA16F #end);
 		textures.pbr = allocTarget("pbr", true, 1.);
 		#if !MRT_low
-		textures.other = allocTarget("other", true, 1.);
+		textures.other = allocTarget("other", true, 1., RGBA16F);
 		#end
 		textures.depth = allocTarget("depth", true, 1., R32F);
 		textures.hdr = allocTarget("hdrOutput", true, 1, #if MRT_low RGB10A2 #else RGBA16F #end);
@@ -621,14 +581,6 @@ class Renderer extends h3d.scene.Renderer {
 		ctx.engine.popTarget();
 	}
 
-	function drawEmissiveDecals( passName : String ) {
-		var passes = get(passName);
-		if( passes.isEmpty() ) return;
-		ctx.engine.pushTargets([textures.albedo,textures.normal,textures.pbr#if !MRT_low ,textures.other #end]);
-		renderPass(emissiveDecalsOutput, passes);
-		ctx.engine.popTarget();
-	}
-
 	function getPbrRenderTargets( depth : Bool ) {
 		var targets = [textures.albedo, textures.normal, textures.pbr #if !MRT_low , textures.other #end];
 		if ( depth )
@@ -658,7 +610,6 @@ class Renderer extends h3d.scene.Renderer {
 
 		begin(Decals);
 		drawPbrDecals("decal");
-		drawEmissiveDecals("emissiveDecal");
 		end();
 
 		setTarget(textures.hdr);
@@ -751,7 +702,7 @@ class Renderer extends h3d.scene.Renderer {
 				if( k > 0 )
 					debugShadowMapIndex -= k;
 				#if hl
-				if( l != null && shadowMap != prev ) Sys.println(l.name);
+				if( l != null && shadowMap != prev ) Sys.println("Debug light : " + l.name);
 				#end
 			}
 			if( shadowMap == null )
@@ -801,7 +752,7 @@ class Renderer extends h3d.scene.Renderer {
 				var a : Array<h3d.shader.pbr.Slides.DebugMode>;
 				if( y == 0 )
 					a = [Albedo,Normal,Depth];
-				else if ( y == 1 ) 
+				else if ( y == 1 )
 					a = [Metalness,Roughness,AO];
 				else
 					a = [Emissive,Shadow,Velocity];
