@@ -6,6 +6,7 @@ enum MeshBatchFlag {
 	EnableStorageBuffer;
 	HasPrimitiveOffset;
 	EnableCpuLod;
+	ForceGpuUpdate;
 }
 
 /**
@@ -56,12 +57,8 @@ class MeshBatch extends MultiMaterial {
 	public var calcBounds = true;
 
 	/**
-	 * If set, this distance is used to compute screen ratio and lod on all the instances this frame
-	 */
-	public var lodDistance : Float;
-
-	/**
-	 * If set, use this lod in emitInstance()
+	 	With EnableCpuLod, set the lod of the next emitInstance.
+		Without EnableCpuLod and not using primitiveSubParts, set the lod of the whole batch.
 	 */
 	public var curLod : Int = -1;
 
@@ -91,6 +88,16 @@ class MeshBatch extends MultiMaterial {
 		meshBatchFlags.set(EnableStorageBuffer);
 	}
 
+	/**
+	 * Force PerInstance to be setup by a compute shader.
+	 * Don't support without Storage Buffer to simplify implementation.
+	 */
+	public function forceGpuUpdate() {
+		meshBatchFlags.set(EnableGpuUpdate);
+		meshBatchFlags.set(EnableStorageBuffer);
+		meshBatchFlags.set(ForceGpuUpdate);
+	}
+
 	public function enableCpuLod() {
 		var prim = getPrimitive();
 		var lodCount = prim.lodCount();
@@ -103,9 +110,14 @@ class MeshBatch extends MultiMaterial {
 	function getPrimitive() return @:privateAccess instanced.primitive;
 	function storageBufferEnabled() return meshBatchFlags.has(EnableStorageBuffer);
 	function gpuUpdateEnabled() return meshBatchFlags.has(EnableGpuUpdate);
+	function gpuUpdateForced() return meshBatchFlags.has(ForceGpuUpdate);
 	function getMaxElements() return storageBufferEnabled() ? MAX_STORAGE_BUFFER_ELEMENTS : MAX_BUFFER_ELEMENTS;
 	function hasPrimitiveOffset() return meshBatchFlags.has(HasPrimitiveOffset);
 	function cpuLodEnabled() return meshBatchFlags.has(EnableCpuLod);
+
+	inline function shouldResizeDown( currentSize : Int, minSize : Int ) : Bool {
+		return meshBatchFlags.has(EnableResizeDown) && currentSize > minSize << 1;
+	}
 
 	public function begin( emitCountTip = -1 ) : Int {
 		instanceCount = 0;
@@ -121,7 +133,7 @@ class MeshBatch extends MultiMaterial {
 		var alloc = hxd.impl.Allocator.get();
 		while( p != null ) {
 			var size = emitCountTip * p.paramsCount * 4;
-			if( p.data == null || p.data.length < size || ( meshBatchFlags.has(EnableResizeDown) && p.data.length > size << 1) ) {
+			if( p.data == null || p.data.length < size || shouldResizeDown(p.data.length, size) ) {
 				if( p.data != null ) alloc.disposeFloats(p.data);
 				p.data = alloc.allocFloats(size);
 			}
@@ -252,17 +264,22 @@ class MeshBatch extends MultiMaterial {
 	}
 
 	public function emitInstance() {
-		if( worldPosition == null ) syncPos();
 		if( primitiveSubParts != null )
 			emitPrimitiveSubParts();
-		else if (calcBounds)
-			instanced.addInstanceBounds(worldPosition == null ? absPos : worldPosition);
 
-		var p = dataPasses;
-		while( p != null ) {
-			syncData(p);
-			p = p.next;
+		if(!gpuUpdateForced()){
+			if( worldPosition == null ) syncPos();
+
+			if (primitiveSubParts == null && calcBounds)
+				instanced.addInstanceBounds(worldPosition == null ? absPos : worldPosition);
+
+			var p = dataPasses;
+			while( p != null ) {
+				syncData(p);
+				p = p.next;
+			}
 		}
+
 		instanceCount++;
 	}
 
@@ -335,25 +352,22 @@ class MeshBatch extends MultiMaterial {
 
 				if( buf == null || buf.isDisposed() || buf.vertices < vertexCountAllocated ) {
 					var bufferFlags : hxd.impl.Allocator.BufferFlags = storageBufferEnabled() ? UniformReadWrite : UniformDynamic;
+
 					if ( buf != null )
 						alloc.disposeBuffer(buf);
 					buf = alloc.allocBuffer( vertexCountAllocated, p.bufferFormat,bufferFlags );
 					p.buffers[index] = buf;
 					upload = true;
 				}
-				if( upload )
+				if( upload && !gpuUpdateForced())
 					buf.uploadFloats(p.data, start * p.paramsCount * 4, vertexCount);
 				if( primitiveSubBytes != null ) {
 					if( p.instanceBuffers == null )
 						p.instanceBuffers = [];
 					var ibuf = p.instanceBuffers[index];
-					if ( ibuf != null && ibuf.commandCount != count ) {
-						ibuf.dispose();
-						ibuf = null;
-					}
-					var ibufUpload = needUpload || ibuf == null;
 					if ( ibuf == null )
 						ibuf = new h3d.impl.InstanceBuffer();
+					var ibufUpload = needUpload || ibuf.commandCount != count;
 					if ( ibufUpload ) {
 						var psBytes = primitiveSubBytes[p.matIndex];
 						if ( start > 0 && count < instanceCount ) {
@@ -362,10 +376,11 @@ class MeshBatch extends MultiMaterial {
 								psBytes.setInt32(i*instanceSize+16, i);
 						}
 
-						if(count <= ibuf.commandCount && !meshBatchFlags.has(EnableResizeDown)){
-							ibuf.uploadBytes(count, psBytes);
-						} else {
+						var ibufMaxCommandCount = ibuf.maxCommandCount;
+						if ( shouldResizeDown(ibufMaxCommandCount, count) || count > ibufMaxCommandCount) {
 							ibuf.allocFromBytes(count, psBytes);
+						} else {
+							ibuf.uploadBytes(count, psBytes);
 						}
 						p.instanceBuffers[index] = ibuf;
 					}
@@ -468,7 +483,6 @@ class MeshBatch extends MultiMaterial {
 
 	override function emit(ctx:RenderContext) {
 		if( instanceCount == 0 ) return;
-		calcScreenRatio(ctx);
 		var p = dataPasses;
 		while( p != null ) {
 			var pass = p.pass;
@@ -515,7 +529,7 @@ class MeshBatch extends MultiMaterial {
 
 	function setPassCommand(p : BatchData, bufferIndex : Int) {
 		var count = hxd.Math.imin( instanceCount - p.maxInstance * bufferIndex, p.maxInstance );
-		instanced.setCommand(p.matIndex, instanced.screenRatioToLod(curScreenRatio), count);
+		instanced.setCommand(p.matIndex, curLod >= 0 ? curLod : 0, count);
 	}
 
 	function partsFromPrimitive(prim : h3d.prim.MeshPrimitive) {
@@ -538,10 +552,6 @@ class MeshBatch extends MultiMaterial {
 			}
 		}
 		return true;
-	}
-
-	override function calcScreenRatio(ctx:RenderContext) {
-		curScreenRatio = getPrimitive().getBounds().dimension() / ( 2.0 * hxd.Math.max(lodDistance, 0.0001) );
 	}
 
 	override function addBoundsRec( b : h3d.col.Bounds, relativeTo: h3d.Matrix ) {
