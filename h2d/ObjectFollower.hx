@@ -78,7 +78,7 @@ class ObjectFollower extends Object {
 	function followObject() {
 		if( follow == null ) {
 			if ( autoRemove )
-				remove();		
+				remove();
 			return;
 		}
 		var scene = @:privateAccess follow.getScene();
@@ -181,8 +181,11 @@ class ObjectFollower extends Object {
 			}
 		}
 
-		if( !depthMask ) {
+		if( !depthMask ) @:privateAccess {
+			var prev = ctx.baseShader.zValue;
+			ctx.baseShader.zValue = zValue;
 			super.drawRec(ctx);
+			ctx.baseShader.zValue = prev;
 			return;
 		}
 

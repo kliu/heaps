@@ -243,8 +243,12 @@ class FileConverter {
 			outFile += e.path.substr(0, -(ext.length + 1));
 		else
 			outFile += e.path;
-		if( cmd.paramsStr != null )
-			outFile += "."+cmd.paramsStr;
+		if( cmd.paramsStr != null ) {
+			var paramsStr = cmd.paramsStr;
+			if( paramsStr.length > 40 )
+				paramsStr = haxe.crypto.Sha1.make(haxe.io.Bytes.ofString(paramsStr)).toHex();
+			outFile += "." + paramsStr;
+		}
 		var conv = null;
 		for( c in cmd.conv )
 			if( c.sourceExts == null || c.sourceExts.indexOf(ext) >= 0 ) {
@@ -317,9 +321,9 @@ class FileConverter {
 		if( !sys.FileSystem.exists(fullPath) ) throw "Missing "+fullPath;
 
 		var fileTime = getFileTime(fullPath);
-		var time = std.Math.floor(fileTime / FILE_TIME_PRECISION);
+		var time = hxd.Math.floor(fileTime / FILE_TIME_PRECISION);
 		#if js
-		var milliseconds = std.Math.floor(fileTime) - time * FILE_TIME_PRECISION;
+		var milliseconds = hxd.Math.floor(fileTime) - time * FILE_TIME_PRECISION;
 		#else
 		var milliseconds = null;
 		#end

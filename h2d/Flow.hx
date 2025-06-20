@@ -1073,20 +1073,27 @@ class Flow extends Object {
 		}
 	}
 
+	public function makeBackground(tile) {
+		return new h2d.ScaleGrid(tile, borderLeft, borderTop, borderRight, borderBottom);
+	}
+
+	function buildBackground(tile) {
+		var background = makeBackground(tile);
+		addChildAt(background, 0);
+		getProperties(background).isAbsolute = true;
+		this.background = background;
+		if( !needReflow ) {
+			background.width = flowCeil(calculatedWidth);
+			background.height = flowCeil(calculatedHeight);
+		}
+	}
+
 	function set_backgroundTile(t) {
 		if( backgroundTile == t )
 			return t;
 		if( t != null ) {
-			if( background == null ) {
-				var background = new h2d.ScaleGrid(t, borderLeft, borderTop, borderRight, borderBottom);
-				addChildAt(background, 0);
-				getProperties(background).isAbsolute = true;
-				this.background = background;
-				if( !needReflow ) {
-					background.width = flowCeil(calculatedWidth);
-					background.height = flowCeil(calculatedHeight);
-				}
-			}
+			if( background == null )
+				buildBackground(t);
 			background.tile = t;
 		} else {
 			if( background != null ) {
@@ -1771,16 +1778,6 @@ class Flow extends Object {
 			}
 		}
 
-		if( scrollPosY != 0 ) {
-			var i = 0;
-			var sy = Std.int(scrollPosY);
-			for( c in children ) {
-				var p = properties[i++];
-				if( p.isAbsolute ) continue;
-				c.y -= sy;
-			}
-		}
-
 		contentWidth = cw;
 		contentHeight = ch;
 
@@ -1801,6 +1798,21 @@ class Flow extends Object {
 
 		calculatedWidth = cw;
 		calculatedHeight = ch;
+
+		if( scrollPosY != 0 ) {
+
+			var maxScroll = Std.int(contentHeight - calculatedHeight);
+			if( maxScroll < 0 ) maxScroll = 0;
+			if( scrollPosY > maxScroll ) @:bypassAccessor scrollPosY = maxScroll;
+
+			var i = 0;
+			var sy = Std.int(scrollPosY);
+			for( c in children ) {
+				var p = properties[i++];
+				if( p.isAbsolute ) continue;
+				c.y -= sy;
+			}
+		}
 
 		if( scrollBar != null ) {
 			if( contentHeight <= calculatedHeight )
